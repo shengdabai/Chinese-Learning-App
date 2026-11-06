@@ -27,7 +27,7 @@ This repository supports productized learning workflows: diagnostic input, guide
 - **Visibility:** `PUBLIC`
 - **License:** MIT License
 
-> **Security notice:** Because this is a pure client-side app, your Gemini API key is embedded in the browser bundle at build time and is visible to anyone who inspects the page. **Run this app only for personal/local use, or behind a private URL.** Do not deploy it publicly with a shared API key. For a production deployment, proxy Gemini calls through a server-side function (e.g. Cloudflare Worker or Vercel Edge Function) so the key never reaches the client.
+> **API boundary:** Snap uses a same-origin server proxy. Live and Roleplay receive single-use, short-lived Gemini tokens; the permanent key stays on the server. The included Vite API is restricted to local development. A public deployment still needs server-verified authentication and per-user quotas.
 
 ## ✨ Features
 
@@ -38,9 +38,7 @@ This repository supports productized learning workflows: diagnostic input, guide
 - `LICENSE`
 - `README.md`
 - `SECURITY.md`
-- `claude中文学习.md`
-- `codex中文学习.md`
-- `gemini中文学习.md`
+- `tests`
 - `index.css`
 - `index.html`
 - `index.tsx`
@@ -51,16 +49,19 @@ This repository supports productized learning workflows: diagnostic input, guide
 Use the commands that match the current project state:
 
 ```bash
-npm install
+npm ci
 npm run dev
+npm run build
 npm run preview
 ```
 
-> ⚠️ The Gemini key is bundled into the client at build time. For anything beyond local/personal use, proxy Gemini calls through your own backend instead of shipping the key to the browser.
+Use Node.js `^20.19.0 || >=22.12.0`, as required by the locked Vite React plugin. Preview serves an existing build; run `npm run build` first.
+
+> Gemini features require a backend. Set `GEMINI_API_KEY` in the server process environment before starting development; Vite does not load environment files. Never use a `VITE_` variable for credentials.
 
 ## 📖 Usage
 
-- **Snap** — Grant camera access, point at an object, and capture. You get the word + pinyin + meaning and a new review card.
+- **Snap** — Grant camera access, point at an object, and capture. You get the word + pinyin + meaning; use **Add to SRS Review** to save a review card.
 - **Live** — Grant microphone access and start a voice session to practice speaking and listening.
 - **Roleplay** — Choose a scenario and converse in character with the AI.
 - **Review** — Work through your SRS queue to lock in vocabulary.
@@ -68,7 +69,7 @@ npm run preview
 
 ## 🗺️ Status
 
-Active, in-public project. Core modes (Snap, Live, Roleplay, SRS, Quests/Profile) are working. It's a fully client-side build with local persistence; a key proxy and richer content are natural next steps. Issues and ideas are welcome.
+Active, in-public project. Core modes (Snap, Live, Roleplay, SRS, Quests/Profile) are working. Learning data persists locally. The development API proxies image analysis and issues Live tokens; production authentication and richer content remain pending. Issues and ideas are welcome.
 
 ## 🤝 Connect / About
 
@@ -90,7 +91,7 @@ Released under the [MIT License](./LICENSE).
 
 # 中文
 
-**[English](#-lingualens--ai-chinese-learning-app) | 中文**
+**[English](#chinese-learning-app) | 中文**
 
 [![Last commit](https://img.shields.io/github/last-commit/shengdabai/chinese-learning-app)](https://github.com/shengdabai/chinese-learning-app/commits)
 [![Stars](https://img.shields.io/github/stars/shengdabai/chinese-learning-app?style=social)](https://github.com/shengdabai/chinese-learning-app/stargazers)
@@ -98,7 +99,7 @@ Released under the [MIT License](./LICENSE).
 
 > 把镜头对准你身边的世界，和 AI 老师对话，从真实生活里学中文——而不是死记卡片。
 
-LinguaLens 把手机镜头和麦克风变成一位中文老师。对任何东西拍一张照，立刻得到它的中文词、拼音、声调，并自动生成一张间隔复习卡；再通过实时语音对话和角色扮演把它练熟——全部由 Google Gemini 驱动。
+LinguaLens 把手机镜头和麦克风变成一位中文老师。对任何东西拍一张照，立刻得到它的中文词、拼音、声调，点击 Add to SRS Review 后保存一张间隔复习卡；再通过实时语音对话和角色扮演把它练熟——全部由 Google Gemini 驱动。
 
 ## 为什么
 
@@ -106,11 +107,11 @@ LinguaLens 把手机镜头和麦克风变成一位中文老师。对任何东西
 
 ## 它能做什么
 
-LinguaLens 是一个纯前端 React 应用。你只需提供一个 Google Gemini API Key，一切都在浏览器里运行。
+LinguaLens 使用 React 界面和本地学习存储。图片识别通过服务端调用 Gemini；实时会话使用服务端发放的短期令牌，长期密钥不进入浏览器。
 
 ## ✨ 功能
 
-- **📸 拍照即学** — 用镜头对准任意物体，Gemini 识别后返回中文词、拼音和释义，并生成一张复习卡。
+- **📸 拍照即学** — 用镜头对准任意物体，Gemini 识别后返回中文词、拼音和释义；点击 **Add to SRS Review** 保存复习卡。
 - **🎥 直播模式** — 使用 Gemini 原生音频模型与 AI 老师实时语音对话，练习发音和听力。
 - **🎭 角色扮演场景** — 选择真实生活场景（点餐、打车等），在角色中进行引导式对话。
 - **🔁 SRS 间隔复习** — 内置间隔重复系统，自动安排你拍到的词进行复习，并提供进度统计。
@@ -123,11 +124,11 @@ LinguaLens 是一个纯前端 React 应用。你只需提供一个 Google Gemini
 - **Vite 6** 构建工具
 - **Google GenAI**（`@google/genai`）—— 视觉用 `gemini-2.5-flash`，实时语音用 `gemini-2.5-flash-native-audio-preview`
 - **Tailwind CSS**（CDN 引入）+ **lucide-react** 图标
-- **Web Audio API** 处理实时音频，**React 状态 + 本地存储** 做持久化（无服务器）
+- **Web Audio API** 处理实时音频，**React 状态 + 本地存储** 做持久化（AI 调用经服务端）
 
 ## 🚀 快速开始
 
-**前置要求：** Node.js 18+ 和一个 [Google Gemini API Key](https://ai.google.dev/)。推荐使用基于 Chromium 的浏览器以获得相机和麦克风权限。
+**前置要求：** Node.js `^20.19.0 || >=22.12.0`（锁文件中的 Vite React 插件要求）和一个 [Google Gemini API Key](https://ai.google.dev/)。推荐使用基于 Chromium 的浏览器以获得相机和麦克风权限。
 
 ```bash
 # 1. 克隆
@@ -135,12 +136,10 @@ git clone https://github.com/shengdabai/chinese-learning-app.git
 cd chinese-learning-app
 
 # 2. 安装依赖
-npm install
+npm ci
 
-# 3. 配置 API Key
-cp .env.example .env.local
-# 然后编辑 .env.local，设置：
-#   VITE_GEMINI_API_KEY=your_api_key_here
+# 3. 从你的密钥管理器向服务端进程环境提供 GEMINI_API_KEY
+# 不使用 VITE_ 前缀；应用不自动读取 .env 文件
 
 # 4. 启动（开发服务器：http://localhost:3000）
 npm run dev
@@ -154,10 +153,34 @@ npm run build
 
 | Command | Purpose |
 |---|---|
-| `npm install` | Install project dependencies. |
+| `npm ci` | Install the exact dependencies from the lockfile. |
 | `npm run dev` | vite |
-| `npm run preview` | vite preview |
+| `npm run preview` | Preview the output of `npm run build`. |
 | `npm run build` | vite build |
+| `npm run typecheck` | Check TypeScript without emitting files. |
+| `npm test` | Run offline media lifecycle and component regression tests. |
+
+## Local Verification
+
+```bash
+npm run typecheck
+npm test
+npm run build
+```
+
+Tests use fake media tracks, audio contexts, local storage and Gemini clients. They cover exit/error cleanup, late permission/connection results, repeated starts, and paused video/audio sending. They do not request devices or call paid APIs. The component harness checks event wiring and lifecycle; it does not replace React DOM or browser tests.
+
+Before accepting a release, check desktop and mobile layouts in a real browser. In Live and Roleplay, verify permission denial, token issuance failure, connection failure, exit while connecting, and ending an active session. Confirm that camera/microphone indicators stop after exit, Live video pause stops frames, and resume restores video. Live Gemini validation requires separate authorization and a configured server key.
+
+## Server Integration
+
+`npm run dev` mounts `/api/gemini/snap` and `/api/gemini/live-token` on `http://localhost:3000`. Requests must come from a loopback connection with that exact Host and Origin. Start the app at that URL. The server reads `GEMINI_API_KEY` only when an authorized request needs the SDK. No keys or tokens are persisted or logged by the handler.
+
+`npm run build` emits static frontend assets only. `npm run preview` does **not** run the API. For a public deployment, mount `createGeminiHandler` from `server/geminiApi.ts` behind the same origin and supply `getClient` and a server-verified `authorize` callback that enforces identity, origin/CSRF checks and per-user quotas. The handler denies all requests by default. The localStorage login is a local demo feature and must never authorize server requests. Do not reuse `authorizeLocalDev` for production.
+
+Snap accepts only bounded JPEG data and a fixed server prompt/model. Live tokens allow one connection, a 60-second connection window and a 10-minute lifetime, constrained to the existing audio model. This pinned SDK uses `v1alpha`; see [Google's ephemeral-token documentation](https://ai.google.dev/gemini-api/docs/live-api/ephemeral-tokens). Upstream compatibility has only been verified against local SDK types and mocks, not a paid call.
+
+Invalid saved SRS entries are excluded from the working list, and invalid profiles fall back to independent defaults. Before replacing either stored collection, the first previous raw value is retained under its `_recovery` key. Profile charts are labeled sample data; roleplay coaching tips are scripted, not pronunciation assessment. Local account data isolation remains pending.
 
 ## Operating Notes
 

@@ -1,8 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { GoogleGenAI, Type } from "@google/genai";
+import { analyzePhoto } from '../../services/gemini';
 import { Camera, Volume2, Mic, X, Loader2, BookPlus } from 'lucide-react';
 import { AnalysisResult } from '../../types';
-import { MODEL_STATIC } from '../../config/constants';
 import { ToneVisualizer } from '../../components/ToneVisualizer';
 import { Button } from '../../components/ui/Button';
 import { loadSRSCards, saveSRSCards, addCardIfNew } from '../srs/srsEngine';
@@ -26,57 +25,75 @@ export const SnapMode: React.FC<SnapModeProps> = ({ onSnapComplete }) => {
     const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
     const [addedToSRS, setAddedToSRS] = useState(false);
 
+    const mountedRef = useRef(false);
+    const cameraRequestRef = useRef(0);
+    const practiceRequestRef = useRef(0);
+    const practicePendingRef = useRef(false);
+    const analysisRef = useRef<AbortController | null>(null);
+
     const startPractice = async () => {
+        if (practicePendingRef.current || audioStreamRef.current) return;
+        practicePendingRef.current = true;
+        const request = ++practiceRequestRef.current;
         try {
             const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            if (!mountedRef.current || request !== practiceRequestRef.current) {
+                micStream.getTracks().forEach(track => track.stop());
+                return;
+            }
+            audioStreamRef.current = micStream;
             setAudioStream(micStream);
             setIsPracticing(true);
         } catch (e) {
-            setError('Microphone access denied. Please allow microphone permissions to practice.');
+            if (mountedRef.current && request === practiceRequestRef.current) setError('Microphone access denied. Please allow microphone permissions to practice.');
+        } finally {
+            if (request === practiceRequestRef.current) practicePendingRef.current = false;
         }
     };
 
     const stopPractice = () => {
-        if (audioStream) {
-            audioStream.getTracks().forEach(track => track.stop());
-            setAudioStream(null);
-        }
-        setIsPracticing(false);
+        practiceRequestRef.current++;
+        practicePendingRef.current = false;
+        audioStreamRef.current?.getTracks().forEach(track => track.stop());
+        audioStreamRef.current = null;
+        if (mountedRef.current) { setAudioStream(null); setIsPracticing(false); }
     };
 
     const audioStreamRef = useRef<MediaStream | null>(null);
 
-    // Keep audioStreamRef in sync with audioStream state
     useEffect(() => {
-        audioStreamRef.current = audioStream;
-    }, [audioStream]);
-
-    useEffect(() => {
+        mountedRef.current = true;
         startCamera();
         return () => {
+            mountedRef.current = false;
+            analysisRef.current?.abort();
+            stopPractice();
             stopCamera();
-            // Clean up any active audio stream on unmount
-            if (audioStreamRef.current) {
-                audioStreamRef.current.getTracks().forEach(track => track.stop());
-            }
         };
     }, []);
 
     const startCamera = async () => {
+        stopCamera();
+        const request = cameraRequestRef.current;
         try {
             const ms = await navigator.mediaDevices.getUserMedia({
                 video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
             });
+            if (!mountedRef.current || request !== cameraRequestRef.current) {
+                ms.getTracks().forEach(track => track.stop());
+                return;
+            }
             streamRef.current = ms;
             if (videoRef.current) {
                 videoRef.current.srcObject = ms;
             }
         } catch (e) {
-            setError("Unable to access camera. Please allow camera permissions.");
+            if (mountedRef.current && request === cameraRequestRef.current) setError("Unable to access camera. Please allow camera permissions.");
         }
     };
 
     const stopCamera = () => {
+        cameraRequestRef.current++;
         if (streamRef.current) {
             streamRef.current.getTracks().forEach(track => track.stop());
             streamRef.current = null;
@@ -86,6 +103,7 @@ export const SnapMode: React.FC<SnapModeProps> = ({ onSnapComplete }) => {
     const captureImage = () => {
         if (videoRef.current && canvasRef.current) {
             const video = videoRef.current;
+            if (video.videoWidth < 2 || video.videoHeight < 2) return;
             const canvas = canvasRef.current;
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
@@ -100,6 +118,9 @@ export const SnapMode: React.FC<SnapModeProps> = ({ onSnapComplete }) => {
     };
 
     const reset = () => {
+        analysisRef.current?.abort();
+        stopPractice();
+        setLoading(false);
         setImagePreview(null);
         setResult(null);
         setError(null);
@@ -139,81 +160,25 @@ export const SnapMode: React.FC<SnapModeProps> = ({ onSnapComplete }) => {
     };
 
     const analyzeImage = async (base64DataUrl: string) => {
+        analysisRef.current?.abort();
+        const request = new AbortController();
+        analysisRef.current = request;
         setLoading(true);
         stopCamera();
         try {
             const base64Data = base64DataUrl.split(',')[1];
-            // NOTE: In production, API calls should be proxied through a backend server
-            // to avoid exposing the API key in client-side code.
-            const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-            if (!apiKey) {
-                throw new Error('Gemini API key is not configured. Please set VITE_GEMINI_API_KEY in .env.local.');
-            }
-            const ai = new GoogleGenAI({ apiKey });
-
-            const response = await ai.models.generateContent({
-                model: MODEL_STATIC,
-                contents: [
-                    {
-                        role: "user",
-                        parts: [
-                            {
-                                inlineData: {
-                                    mimeType: "image/jpeg",
-                                    data: base64Data
-                                }
-                            },
-                            {
-                                text: `Analyze the main object in this image. Output JSON with these fields:
-- chinese: Simplified Chinese characters for the object
-- pinyin: Standard Pinyin with tone marks
-- english: English translation
-- sentence: A simple, business-appropriate example sentence in Chinese
-- sentencePinyin: Pinyin for the sentence
-- sentenceEnglish: English translation of the sentence
-- hskLevel: HSK level (1-6) indicating difficulty
-- funFact: An interesting cultural fact about this object in Chinese culture (in English)
-- commonMistake: A common pronunciation or usage mistake learners make (in English)
-- radicals: Array of Chinese radicals/components that make up the main character(s)`
-                            }
-                        ]
-                    }
-                ],
-                config: {
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: Type.OBJECT,
-                        properties: {
-                            chinese: { type: Type.STRING },
-                            pinyin: { type: Type.STRING },
-                            english: { type: Type.STRING },
-                            sentence: { type: Type.STRING },
-                            sentencePinyin: { type: Type.STRING },
-                            sentenceEnglish: { type: Type.STRING },
-                            hskLevel: { type: Type.NUMBER },
-                            funFact: { type: Type.STRING },
-                            commonMistake: { type: Type.STRING },
-                            radicals: { type: Type.ARRAY, items: { type: Type.STRING } }
-                        },
-                        required: ["chinese", "pinyin", "english", "sentence", "sentencePinyin", "sentenceEnglish", "hskLevel", "funFact", "commonMistake", "radicals"]
-                    }
-                }
-            });
-
-            const text = response.text;
-            if (!text) throw new Error('No response from AI model.');
-            let data: AnalysisResult;
-            try { data = JSON.parse(text); }
-            catch { throw new Error('Failed to parse AI response. Please try again.'); }
+            const data = await analyzePhoto(base64Data, request.signal);
+            if (!mountedRef.current || request.signal.aborted) return;
             setResult(data);
             if (data.english && onSnapComplete) {
                 onSnapComplete(data.english);
             }
         } catch (e) {
+            if (!mountedRef.current || request.signal.aborted) return;
             const message = e instanceof Error ? e.message : 'Analysis failed. Please try again.';
             setError(message);
         } finally {
-            setLoading(false);
+            if (mountedRef.current && !request.signal.aborted) setLoading(false);
         }
     };
 
@@ -240,6 +205,7 @@ export const SnapMode: React.FC<SnapModeProps> = ({ onSnapComplete }) => {
                 {!imagePreview && (
                     <div className="absolute bottom-8 left-0 right-0 flex justify-center z-20">
                         <button
+                            aria-label="Capture photo"
                             onClick={captureImage}
                             className="w-20 h-20 rounded-full border-4 border-white/30 bg-white/20 backdrop-blur-sm flex items-center justify-center hover:bg-white/30 transition-all active:scale-95 shadow-xl"
                         >
@@ -305,6 +271,7 @@ export const SnapMode: React.FC<SnapModeProps> = ({ onSnapComplete }) => {
                                         )}
                                     </div>
                                     <button
+                                        aria-label="Capture new item"
                                         onClick={reset}
                                         className="p-2 -mr-2 -mt-2 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-900 transition-colors"
                                     >
@@ -348,6 +315,7 @@ export const SnapMode: React.FC<SnapModeProps> = ({ onSnapComplete }) => {
 
                                 <div className="pt-2">
                                     <button
+                                        aria-label="Capture new item"
                                         onClick={reset}
                                         className="w-full py-3 bg-slate-900 text-white font-medium rounded-xl hover:bg-slate-800 transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg shadow-slate-900/20"
                                     >

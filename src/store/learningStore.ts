@@ -23,24 +23,43 @@ export class LearningStore {
         try {
             const stored = localStorage.getItem(STORAGE_KEY);
             if (stored) {
-                return JSON.parse(stored);
+                const p = JSON.parse(stored);
+                if (p && ['xp', 'streak', 'level'].every(k => Number.isFinite(p[k]) && p[k] >= 0)
+                    && Array.isArray(p.quests) && p.quests.every(q => q && typeof q.id === 'string'
+                        && typeof q.title === 'string' && typeof q.description === 'string'
+                        && typeof q.completed === 'boolean' && ['snap', 'live', 'quiz'].includes(q.type)
+                        && Number.isFinite(q.xpReward) && q.xpReward >= 0
+                        && (q.targetCriteria === undefined || typeof q.targetCriteria === 'string')
+                        && ['progress', 'totalRequired'].every(k => q[k] === undefined || (Number.isFinite(q[k]) && q[k] >= 0)))) return p;
             }
         } catch (e) {
-            console.error("Failed to load profile", e);
+            console.error("Failed to load profile");
         }
-        return DEFAULT_PROFILE;
+        return structuredClone(DEFAULT_PROFILE);
     }
 
     static saveProfile(profile: UserProfile): void {
         try {
+            const previous = localStorage.getItem(STORAGE_KEY);
+            if (previous && localStorage.getItem(`${STORAGE_KEY}_recovery`) === null) {
+                localStorage.setItem(`${STORAGE_KEY}_recovery`, previous);
+            }
             localStorage.setItem(STORAGE_KEY, JSON.stringify(profile));
         } catch (e) {
-            console.error("Failed to save profile", e);
+            console.error("Failed to save profile");
+        }
+    }
+
+    static clearRecovery(): void {
+        try {
+            localStorage.removeItem(`${STORAGE_KEY}_recovery`);
+        } catch {
+            console.error('Failed to clear profile recovery copy.');
         }
     }
 
     static resetProfile(): UserProfile {
         LearningStore.saveProfile(DEFAULT_PROFILE);
-        return DEFAULT_PROFILE;
+        return structuredClone(DEFAULT_PROFILE);
     }
 }

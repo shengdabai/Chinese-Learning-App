@@ -113,6 +113,16 @@ export function gradeCard(card: SRSCard, grade: number): SRSCard {
   };
 }
 
+function isSRSCard(value: unknown): value is SRSCard {
+  if (!value || typeof value !== 'object') return false;
+  const c = value as Record<string, unknown>;
+  return ['id', 'word', 'pinyin', 'english'].every(k => typeof c[k] === 'string' && (c[k] as string).trim().length > 0)
+    && ['interval', 'nextReview', 'repetitions', 'addedAt'].every(k => typeof c[k] === 'number' && Number.isFinite(c[k]) && (c[k] as number) >= 0)
+    && Number.isInteger(c.repetitions) && typeof c.easeFactor === 'number' && Number.isFinite(c.easeFactor) && c.easeFactor >= 1.3
+    && ['sentence', 'sentencePinyin', 'sentenceEnglish'].every(k => c[k] === undefined || typeof c[k] === 'string')
+    && (c.hskLevel === undefined || (Number.isInteger(c.hskLevel) && Number(c.hskLevel) >= 1 && Number(c.hskLevel) <= 6));
+}
+
 /**
  * Load all SRS cards from localStorage.
  */
@@ -120,11 +130,12 @@ export function loadSRSCards(): readonly SRSCard[] {
   try {
     const stored = localStorage.getItem(SRS_STORAGE_KEY);
     if (stored) {
-      return JSON.parse(stored) as SRSCard[];
+      const parsed: unknown = JSON.parse(stored);
+      return Array.isArray(parsed) ? parsed.filter(isSRSCard) : [];
     }
   } catch (error) {
     if (error instanceof Error) {
-      console.error('Failed to load SRS cards:', error.message);
+      console.error('Failed to load SRS cards.');
     }
   }
   return [];
@@ -135,11 +146,23 @@ export function loadSRSCards(): readonly SRSCard[] {
  */
 export function saveSRSCards(cards: readonly SRSCard[]): void {
   try {
+    const previous = localStorage.getItem(SRS_STORAGE_KEY);
+    if (previous && localStorage.getItem(`${SRS_STORAGE_KEY}_recovery`) === null) {
+        localStorage.setItem(`${SRS_STORAGE_KEY}_recovery`, previous);
+    }
     localStorage.setItem(SRS_STORAGE_KEY, JSON.stringify(cards));
   } catch (error) {
     if (error instanceof Error) {
-      console.error('Failed to save SRS cards:', error.message);
+      console.error('Failed to save SRS cards.');
     }
+  }
+}
+
+export function clearSRSRecovery(): void {
+  try {
+    localStorage.removeItem(`${SRS_STORAGE_KEY}_recovery`);
+  } catch {
+    console.error('Failed to clear SRS recovery copy.');
   }
 }
 

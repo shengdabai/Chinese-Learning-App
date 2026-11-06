@@ -1,4 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
+import { clearSRSRecovery } from '../srs/srsEngine';
+import { LearningStore } from '../../store/learningStore';
 
 const AUTH_STORAGE_KEY = 'lingualens_auth';
 const USERS_STORAGE_KEY = 'lingualens_users';
@@ -193,6 +195,8 @@ export function useAuth(): UseAuthReturn {
 
   const logout = useCallback(() => {
     saveSession(null);
+    clearSRSRecovery();
+    LearningStore.clearRecovery();
     setState({ user: null, isLoading: false });
   }, []);
 

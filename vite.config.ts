@@ -1,17 +1,32 @@
 import path from 'path';
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { GoogleGenAI } from '@google/genai';
+import { authorizeLocalDev, createGeminiHandler } from './server/geminiApi';
 
-export default defineConfig(({ mode }) => {
-    // env loaded for future server-side use; source code reads import.meta.env.VITE_GEMINI_API_KEY
-    // which Vite exposes automatically for VITE_* prefixed vars — no define block needed.
-    loadEnv(mode, '.', '');
+export default defineConfig(() => {
     return {
+      envDir: false,
       server: {
         port: 3000,
+        // The local Gemini API checks Host/Origin against this port; fail fast instead of moving to another one.
+        strictPort: true,
         host: 'localhost',
       },
-      plugins: [react()],
+      plugins: [react(), {
+        name: 'local-gemini-api',
+        configureServer(server) {
+          const handler = createGeminiHandler({ authorize: authorizeLocalDev, getClient: () => {
+            const apiKey = process.env.GEMINI_API_KEY;
+            if (!apiKey) throw new Error('Server key not configured');
+            return new GoogleGenAI({ apiKey, httpOptions: { apiVersion: 'v1alpha' } });
+          } });
+          server.middlewares.use((req, res, next) => {
+            if (req.url?.startsWith('/api/gemini/')) void handler(req, res);
+            else next();
+          });
+        },
+      }],
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),

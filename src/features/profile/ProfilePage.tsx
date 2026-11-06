@@ -61,7 +61,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ profile, onLogout, use
                             <Zap size={24} fill="currentColor" />
                         </div>
                         <div>
-                            <p className="text-3xl font-bold text-slate-800">{Math.floor(profile.xp / 100)}</p>
+                            <p className="text-3xl font-bold text-slate-800">{profile.quests.filter(quest => quest.completed).length}</p>
                             <p className="text-xs text-blue-600 font-bold uppercase tracking-wide">Quests Done</p>
                         </div>
                     </div>
@@ -99,9 +99,9 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ profile, onLogout, use
                 <div className="flex items-center justify-between mb-6">
                     <h3 className="font-bold text-slate-800 flex items-center gap-2">
                         <TrendingUp size={20} className="text-slate-400" />
-                        Learning Curve
+                        Learning Curve (sample data)
                     </h3>
-                    <select className="text-xs bg-slate-100 border-none rounded-md px-2 py-1 text-slate-600">
+                    <select disabled aria-label="Sample chart period" className="text-xs bg-slate-100 border-none rounded-md px-2 py-1 text-slate-600">
                         <option>Last 7 Days</option>
                         <option>Last 30 Days</option>
                     </select>

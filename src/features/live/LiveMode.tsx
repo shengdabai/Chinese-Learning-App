@@ -1,9 +1,11 @@
+import { createLiveClient } from '../../services/gemini';
 import React, { useState, useRef, useEffect } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality } from "@google/genai";
+import { LiveServerMessage, Modality, Session } from "@google/genai";
 import { Sparkles, ChevronRight, Mic, Video, Square } from 'lucide-react';
 import { MODEL_LIVE } from '../../config/constants';
 import { arrayBufferToBase64, base64ToFloat32Array, float32ToPCM16 } from '../../utils/audio';
 import { ToneVisualizer } from '../../components/ToneVisualizer';
+import { MediaSessionResources, captureVideoFrame } from '../../utils/mediaSession';
 
 interface LiveModeProps {
     onSessionStart?: () => void;
@@ -11,9 +13,12 @@ interface LiveModeProps {
 
 export const LiveMode: React.FC<LiveModeProps> = ({ onSessionStart }) => {
     const [connected, setConnected] = useState(false);
+    const [connecting, setConnecting] = useState(false);
+    const resourcesRef = useRef<MediaSessionResources | null>(null);
     const [micActive, setMicActive] = useState(false);
     const micActiveRef = useRef(false);
     const [videoActive, setVideoActive] = useState(true);
+    const videoActiveRef = useRef(true);
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
@@ -28,36 +33,39 @@ export const LiveMode: React.FC<LiveModeProps> = ({ onSessionStart }) => {
     // Cleanup on unmount
     useEffect(() => {
         return () => {
-            disconnect();
+            resourcesRef.current?.dispose();
+            resourcesRef.current = null;
         };
     }, []);
 
     const connectWithCallbacks = async () => {
+        if (resourcesRef.current?.active) return;
+        const resources = new MediaSessionResources();
+        resourcesRef.current = resources;
+        setConnecting(true);
+        nextStartTimeRef.current = 0;
         try {
             setStatus("Initializing hardware...");
 
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: { width: 640, height: 480 } });
+            const stream = resources.trackStream(await navigator.mediaDevices.getUserMedia({ audio: true, video: { width: 640, height: 480 } }));
+            if (!resources.active) return;
+            stream.getVideoTracks().forEach(track => { track.enabled = videoActiveRef.current; });
             streamRef.current = stream;
 
             if (videoRef.current) {
                 videoRef.current.srcObject = stream;
-                videoRef.current.play();
+                void videoRef.current.play().catch(() => {});
             }
 
             const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
             audioContextRef.current = audioCtx;
+            resources.addCleanup(() => audioCtx.close());
 
-            // NOTE: In production, API calls should be proxied through a backend server
-            // to avoid exposing the API key in client-side code.
-            const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-            if (!apiKey) {
-                setStatus("Error: API key not configured. Set VITE_GEMINI_API_KEY in .env.local.");
-                return;
-            }
-            const ai = new GoogleGenAI({ apiKey });
+            const ai = await createLiveClient();
+            if (!resources.active) return;
             setStatus("Connecting to Gemini Live...");
 
-            const sessionPromise = ai.live.connect({
+            const sessionPromise = resources.trackSession(ai.live.connect({
                 model: MODEL_LIVE,
                 config: {
                     responseModalities: [Modality.AUDIO],
@@ -68,6 +76,8 @@ export const LiveMode: React.FC<LiveModeProps> = ({ onSessionStart }) => {
                 },
                 callbacks: {
                     onopen: () => {
+                        if (!resources.active) return;
+                        setConnecting(false);
                         setConnected(true);
                         setMicActive(true);
                         micActiveRef.current = true;
@@ -77,33 +87,41 @@ export const LiveMode: React.FC<LiveModeProps> = ({ onSessionStart }) => {
                         // Start Audio Streaming
                         const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
                         inputAudioContextRef.current = inputCtx;
+                        resources.addCleanup(() => inputCtx.close());
                         const source = inputCtx.createMediaStreamSource(stream);
 
                         const processor = inputCtx.createScriptProcessor(4096, 1, 1);
                         scriptProcessorRef.current = processor;
+                        resources.addCleanup(() => {
+                            processor.onaudioprocess = null;
+                            processor.disconnect();
+                            source.disconnect();
+                        });
 
                         processor.onaudioprocess = (e) => {
-                            if (!micActiveRef.current) return; // Mute logic
+                            if (!resources.active || !micActiveRef.current) return;
                             const inputData = e.inputBuffer.getChannelData(0);
                             const pcm16 = float32ToPCM16(inputData);
                             const base64 = arrayBufferToBase64(pcm16.buffer);
 
                             sessionPromise.then(session => {
+                                if (!resources.active || !micActiveRef.current) return;
                                 session.sendRealtimeInput({
                                     audio: {
                                         mimeType: "audio/pcm;rate=16000",
                                         data: base64
                                     }
                                 });
-                            });
+                            }).catch(() => {});
                         };
 
                         source.connect(processor);
                         processor.connect(inputCtx.destination);
 
-                        startVideoStreaming(sessionPromise);
+                        startVideoStreaming(sessionPromise, resources);
                     },
                     onmessage: async (msg: LiveServerMessage) => {
+                        if (!resources.active) return;
                         const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
                         if (audioData && audioContextRef.current) {
                             const ctx = audioContextRef.current;
@@ -125,80 +143,57 @@ export const LiveMode: React.FC<LiveModeProps> = ({ onSessionStart }) => {
                         }
                     },
                     onclose: () => {
-                        setConnected(false);
+                        if (!resources.active) return;
+                        disconnect();
                         setStatus("Disconnected");
                     },
                     onerror: (err) => {
-                        console.error(err);
+                        if (!resources.active) return;
+                        console.error("Live session connection error");
+                        disconnect();
                         setStatus("Error connecting");
                         setConnected(false);
                     }
                 }
-            });
+            }));
+            await sessionPromise;
 
         } catch (e) {
+            if (!resources.active) return;
+            disconnect();
             const message = e instanceof Error ? e.message : 'Unknown error';
             setStatus(`Failed to start: ${message}`);
         }
     };
 
-    const startVideoStreaming = (sessionPromise: Promise<any>) => {
-        if (intervalRef.current) clearInterval(intervalRef.current);
-
-        intervalRef.current = window.setInterval(() => {
-            // Need to capture the current refs inside the interval
-            const video = videoRef.current;
-            const canvas = canvasRef.current;
-
-            if (!video || !canvas) return; // VideoActive check handled inside component state if needed, here checking refs
-
-            // Check video active state roughly (since interval closure might capture old state, better to use ref for state if dynamic)
-            // For now, let's assuming videoActive changes re-trigger this or we just check the state updates. 
-            // Actually, standard setInterval sees stale state in functional components unless using refs. 
-            // I will rely on the fact that we can't easily access strict outdated state without refs. 
-            // Let's just always send if connected.
-
-            canvas.width = video.videoWidth * 0.5;
-            canvas.height = video.videoHeight * 0.5;
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                const base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
-
-                sessionPromise.then(session => {
-                    session.sendRealtimeInput({
-                        media: {
-                            mimeType: "image/jpeg",
-                            data: base64
-                        }
-                    });
-                });
-            }
+    const startVideoStreaming = (sessionPromise: Promise<Session>, resources: MediaSessionResources) => {
+        const interval = window.setInterval(() => {
+            if (!resources.active) return;
+            const base64 = captureVideoFrame(videoRef.current, canvasRef.current, videoActiveRef.current);
+            if (!base64) return;
+            sessionPromise.then(session => {
+                if (!resources.active || !videoActiveRef.current) return;
+                session.sendRealtimeInput({ media: { mimeType: "image/jpeg", data: base64 } });
+            }).catch(() => {});
         }, 1000);
+        intervalRef.current = interval;
+        resources.addCleanup(() => clearInterval(interval));
     };
 
     const disconnect = () => {
-        if (scriptProcessorRef.current) {
-            scriptProcessorRef.current.disconnect();
-            scriptProcessorRef.current = null;
-        }
-        if (inputAudioContextRef.current) {
-            inputAudioContextRef.current.close();
-            inputAudioContextRef.current = null;
-        }
-        if (audioContextRef.current) {
-            audioContextRef.current.close();
-            audioContextRef.current = null;
-        }
-        if (streamRef.current) {
-            streamRef.current.getTracks().forEach(t => t.stop());
-            streamRef.current = null;
-        }
-        if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-        }
+        resourcesRef.current?.dispose();
+        resourcesRef.current = null;
+        scriptProcessorRef.current = null;
+        inputAudioContextRef.current = null;
+        audioContextRef.current = null;
+        streamRef.current = null;
+        intervalRef.current = null;
+        if (videoRef.current) videoRef.current.srcObject = null;
+        nextStartTimeRef.current = 0;
+        micActiveRef.current = false;
+        setMicActive(false);
         setConnected(false);
+        setConnecting(false);
         setStatus("Ready to connect");
     };
 
@@ -209,7 +204,10 @@ export const LiveMode: React.FC<LiveModeProps> = ({ onSessionStart }) => {
     };
 
     const toggleVideo = () => {
-        setVideoActive(!videoActive);
+        const next = !videoActiveRef.current;
+        videoActiveRef.current = next;
+        streamRef.current?.getVideoTracks().forEach(track => { track.enabled = next; });
+        setVideoActive(next);
     };
 
     return (
@@ -253,9 +251,10 @@ export const LiveMode: React.FC<LiveModeProps> = ({ onSessionStart }) => {
                         </p>
                         <button
                             onClick={connectWithCallbacks}
+                            disabled={connecting}
                             className="group relative flex items-center gap-3 bg-white text-slate-900 px-8 py-3.5 rounded-full font-bold hover:bg-slate-50 transition-all active:scale-95 shadow-[0_0_30px_rgba(255,255,255,0.15)] hover:shadow-[0_0_40px_rgba(255,255,255,0.3)]"
                         >
-                            Start Session
+                            {connecting ? 'Connecting...' : 'Start Session'}
                             <ChevronRight size={18} className="text-slate-400 group-hover:translate-x-1 transition-transform" />
                         </button>
                         <p className="mt-6 text-xs text-slate-500 font-mono tracking-wide">{status}</p>
@@ -269,6 +268,8 @@ export const LiveMode: React.FC<LiveModeProps> = ({ onSessionStart }) => {
                     <div className="flex items-center gap-6 px-10 py-5 bg-black/60 backdrop-blur-xl border border-white/10 rounded-full shadow-2xl">
                         <button
                             onClick={toggleMic}
+                            aria-label={micActive ? "Mute microphone" : "Unmute microphone"}
+                            aria-pressed={micActive}
                             className={`p-4 rounded-full transition-all duration-200 ${micActive ? 'bg-white text-slate-900 hover:bg-slate-200 scale-100' : 'bg-red-500/20 text-red-400 hover:bg-red-500/30 ring-1 ring-red-500/30'}`}
                         >
                             {micActive ? <Mic size={24} /> : <div className="relative"><Mic size={24} /><div className="absolute inset-0 border-t-2 border-red-400 rotate-45 top-1/2 left-0 w-full" /></div>}
@@ -278,6 +279,8 @@ export const LiveMode: React.FC<LiveModeProps> = ({ onSessionStart }) => {
 
                         <button
                             onClick={toggleVideo}
+                            aria-label={videoActive ? "Pause video" : "Resume video"}
+                            aria-pressed={videoActive}
                             className={`p-4 rounded-full transition-all duration-200 ${videoActive ? 'bg-slate-700/50 text-white hover:bg-slate-600/50' : 'bg-red-500/20 text-red-400 hover:bg-red-500/30 ring-1 ring-red-500/30'}`}
                         >
                             {videoActive ? <Video size={24} /> : <div className="relative"><Video size={24} /><div className="absolute inset-0 border-t-2 border-red-400 rotate-45 top-1/2 left-0 w-full" /></div>}
@@ -287,6 +290,7 @@ export const LiveMode: React.FC<LiveModeProps> = ({ onSessionStart }) => {
 
                         <button
                             onClick={disconnect}
+                            aria-label="End session"
                             className="p-4 rounded-full bg-red-600 text-white hover:bg-red-500 transition-all shadow-lg shadow-red-600/30 hover:shadow-red-500/50 active:scale-95"
                         >
                             <Square size={24} fill="currentColor" />
