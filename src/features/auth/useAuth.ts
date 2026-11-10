@@ -61,54 +61,57 @@ async function hashPassword(password: string, salt: string): Promise<string> {
 }
 
 function loadUsers(): readonly StoredUser[] {
-  try {
-    const stored = localStorage.getItem(USERS_STORAGE_KEY);
-    if (stored) {
-      return JSON.parse(stored) as StoredUser[];
-    }
-  } catch (error) {
-    if (error instanceof Error) {
-      console.error('Failed to load users:', error.message);
-    }
+  const stored = localStorage.getItem(USERS_STORAGE_KEY);
+  if (stored === null) return [];
+  const parsed: unknown = JSON.parse(stored);
+  // Preserve corrupt records rather than replacing existing accounts with a new list.
+  if (!Array.isArray(parsed) || !parsed.every(value => isAuthUser(value)
+    && typeof value.salt === 'string' && /^[a-f0-9]{32}$/.test(value.salt)
+    && typeof value.passwordHash === 'string' && /^[a-f0-9]{64}$/.test(value.passwordHash))) {
+    throw new Error('Invalid account storage.');
   }
-  return [];
+  return parsed;
 }
 
 function saveUsers(users: readonly StoredUser[]): void {
-  try {
-    localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
-  } catch (error) {
-    if (error instanceof Error) {
-      console.error('Failed to save users:', error.message);
-    }
-  }
+  localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
+}
+
+function isAuthUser(value: unknown): value is AuthUser & Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const user = value as Record<string, unknown>;
+  return typeof user.username === 'string' && user.username.trim().length > 0
+    && typeof user.createdAt === 'number' && Number.isFinite(user.createdAt) && user.createdAt >= 0;
 }
 
 function loadSession(): AuthUser | null {
   try {
     const stored = localStorage.getItem(AUTH_STORAGE_KEY);
     if (stored) {
-      return JSON.parse(stored) as AuthUser;
+      const parsed: unknown = JSON.parse(stored);
+      return isAuthUser(parsed) ? { username: parsed.username, createdAt: parsed.createdAt } : null;
     }
   } catch (error) {
     if (error instanceof Error) {
-      console.error('Failed to load session:', error.message);
+      console.error('Failed to load session.');
     }
   }
   return null;
 }
 
-function saveSession(user: AuthUser | null): void {
+function saveSession(user: AuthUser | null): boolean {
   try {
     if (user) {
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
     } else {
       localStorage.removeItem(AUTH_STORAGE_KEY);
     }
+    return true;
   } catch (error) {
     if (error instanceof Error) {
-      console.error('Failed to save session:', error.message);
+      console.error('Failed to save session.');
     }
+    return false;
   }
 }
 
@@ -132,65 +135,73 @@ export function useAuth(): UseAuthReturn {
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
-    const trimmedUsername = username.trim().toLowerCase();
-    if (!trimmedUsername || !password) {
-      return { success: false, error: 'Username and password are required.' };
+    try {
+      const trimmedUsername = username.trim().toLowerCase();
+      if (!trimmedUsername || !password) {
+        return { success: false, error: 'Username and password are required.' };
+      }
+
+      const users = loadUsers();
+      const found = users.find(u => u.username === trimmedUsername);
+
+      if (!found) {
+        return { success: false, error: 'User not found. Please register first.' };
+      }
+
+      const computedHash = await hashPassword(password, found.salt);
+      if (found.passwordHash !== computedHash) {
+        return { success: false, error: 'Incorrect password.' };
+      }
+
+      const authUser: AuthUser = { username: found.username, createdAt: found.createdAt };
+      if (!saveSession(authUser)) return { success: false, error: 'Unable to save your session. Check browser storage and try again.' };
+      setState({ user: authUser, isLoading: false });
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Unable to sign in. Check browser storage and try again.' };
     }
-
-    const users = loadUsers();
-    const found = users.find(u => u.username === trimmedUsername);
-
-    if (!found) {
-      return { success: false, error: 'User not found. Please register first.' };
-    }
-
-    const computedHash = await hashPassword(password, found.salt);
-    if (found.passwordHash !== computedHash) {
-      return { success: false, error: 'Incorrect password.' };
-    }
-
-    const authUser: AuthUser = { username: found.username, createdAt: found.createdAt };
-    saveSession(authUser);
-    setState({ user: authUser, isLoading: false });
-    return { success: true };
   }, []);
 
   const register = useCallback(async (username: string, password: string) => {
-    const trimmedUsername = username.trim().toLowerCase();
-    if (!trimmedUsername || !password) {
-      return { success: false, error: 'Username and password are required.' };
+    try {
+      const trimmedUsername = username.trim().toLowerCase();
+      if (!trimmedUsername || !password) {
+        return { success: false, error: 'Username and password are required.' };
+      }
+
+      if (trimmedUsername.length < 3) {
+        return { success: false, error: 'Username must be at least 3 characters.' };
+      }
+
+      if (password.length < 8) {
+        return { success: false, error: 'Password must be at least 8 characters.' };
+      }
+
+      const users = loadUsers();
+      const exists = users.some(u => u.username === trimmedUsername);
+      if (exists) {
+        return { success: false, error: 'Username already taken.' };
+      }
+
+      const salt = generateSalt();
+      const passwordHash = await hashPassword(password, salt);
+
+      const newUser: StoredUser = {
+        username: trimmedUsername,
+        passwordHash,
+        salt,
+        createdAt: Date.now(),
+      };
+
+      saveUsers([...users, newUser]);
+
+      const authUser: AuthUser = { username: newUser.username, createdAt: newUser.createdAt };
+      if (!saveSession(authUser)) return { success: false, error: 'Account saved, but the session could not be saved. Check browser storage, then sign in.' };
+      setState({ user: authUser, isLoading: false });
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Unable to create an account. Check browser storage and try again.' };
     }
-
-    if (trimmedUsername.length < 3) {
-      return { success: false, error: 'Username must be at least 3 characters.' };
-    }
-
-    if (password.length < 8) {
-      return { success: false, error: 'Password must be at least 4 characters.' };
-    }
-
-    const users = loadUsers();
-    const exists = users.some(u => u.username === trimmedUsername);
-    if (exists) {
-      return { success: false, error: 'Username already taken.' };
-    }
-
-    const salt = generateSalt();
-    const passwordHash = await hashPassword(password, salt);
-
-    const newUser: StoredUser = {
-      username: trimmedUsername,
-      passwordHash,
-      salt,
-      createdAt: Date.now(),
-    };
-
-    saveUsers([...users, newUser]);
-
-    const authUser: AuthUser = { username: newUser.username, createdAt: newUser.createdAt };
-    saveSession(authUser);
-    setState({ user: authUser, isLoading: false });
-    return { success: true };
   }, []);
 
   const logout = useCallback(() => {

@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Languages, LogIn, UserPlus, AlertCircle } from 'lucide-react';
 import { Button } from '../../components/ui/Button';
 
 interface AuthPageProps {
-  readonly onLogin: (username: string, password: string) => { success: boolean; error?: string };
-  readonly onRegister: (username: string, password: string) => { success: boolean; error?: string };
+  readonly onLogin: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  readonly onRegister: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
 }
 
 export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, onRegister }) => {
@@ -13,16 +13,19 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, onRegister }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitting = useRef(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting.current) return;
+    submitting.current = true;
     setError(null);
     setIsSubmitting(true);
 
     try {
-      const result = isRegistering
+      const result = await (isRegistering
         ? onRegister(username, password)
-        : onLogin(username, password);
+        : onLogin(username, password));
 
       if (!result.success) {
         setError(result.error ?? 'An error occurred.');
@@ -30,6 +33,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, onRegister }) => {
     } catch (err) {
       setError('An unexpected error occurred. Please try again.');
     } finally {
+      submitting.current = false;
       setIsSubmitting(false);
     }
   };
@@ -100,7 +104,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, onRegister }) => {
                 placeholder="Enter your password"
                 autoComplete={isRegistering ? 'new-password' : 'current-password'}
                 required
-                minLength={4}
+                minLength={isRegistering ? 8 : 1}
               />
             </div>
 
@@ -134,6 +138,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, onRegister }) => {
           <div className="mt-4 text-center">
             <button
               onClick={switchMode}
+              disabled={isSubmitting}
               className="text-sm text-blue-600 hover:text-blue-700 font-medium transition-colors"
             >
               {isRegistering
